@@ -1,0 +1,544 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>駅マップ</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      color: #222;
+    }
+
+    header {
+      min-height: 60px;
+      display: flex;
+      align-items: center;
+      padding: 8px 12px;
+      gap: 10px;
+      border-bottom: 1px solid #ddd;
+    }
+
+    header strong { white-space: nowrap; }
+
+    #search {
+      min-width: 0;
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+
+    #map-area {
+      position: relative;
+      height: calc(100vh - 90px);
+      width: 100%;
+      background: #eaf0e9;
+    }
+
+    #map {
+      height: 100%;
+      width: 100%;
+      background: #eaf0e9;
+      visibility: hidden;
+    }
+
+    #location-loading {
+      position: absolute;
+      inset: 0;
+      z-index: 500;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: #eaf0e9;
+      color: #444;
+      text-align: center;
+      font-size: 15px;
+      line-height: 1.8;
+    }
+
+    .leaflet-popup-content {
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    #status {
+      padding: 6px 12px;
+      font-size: 13px;
+      color: #555;
+      border-bottom: 1px solid #eee;
+    }
+
+    /* 現在地の青い丸 */
+    .current-location-dot {
+      width: 20px;
+      height: 20px;
+      background: #1683f8;
+      border: 3px solid white;
+      border-radius: 50%;
+      box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+    }
+
+    /* 現在地へ戻るボタン */
+    .location-button {
+      width: 46px;
+      height: 46px;
+      border: none;
+      border-radius: 50%;
+      background: white;
+      color: #1683f8;
+      font-size: 25px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .location-button:active {
+      background: #eaf3ff;
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <strong>🚉 駅マップ</strong>
+    <input id="search" type="search" placeholder="東京">
+  </header>
+
+  <div id="status">駅データを読み込んでいます...</div>
+  <div id="map-area">
+    <div id="map"></div>
+    <div id="location-loading">
+      現在地を確認しています...<br>
+      位置情報の使用を許可してください。
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <script>
+    // 東京駅の座標
+    const TOKYO_STATION = [35.6812, 139.7671];
+
+      // 現在地を取得するまで地図は表示しない
+    const map = L.map("map", {
+      preferCanvas: true
+    }).setView(TOKYO_STATION, 13);
+
+    let mapShown = false;
+
+    // 現在地または東京駅が決まったら地図を表示
+    function showMap() {
+      if (mapShown) return;
+
+      mapShown = true;
+      document.getElementById("location-loading").style.display = "none";
+      document.getElementById("map").style.visibility = "visible";
+
+      setTimeout(() => {
+        map.invalidateSize();
+        updateStations();
+      }, 0);
+    }
+
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    // 現在地マーカー
+    let currentLocationMarker = null;
+    let currentLocationCircle = null;
+    let latestLocation = null;
+    let hasLocated = false;
+
+    // 現在地を青い丸で表示・更新
+    function updateCurrentLocation(position) {
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      const accuracy = position.coords.accuracy;
+
+      const location = [lat, lng];
+      latestLocation = location;
+
+      if (!currentLocationMarker) {
+        currentLocationMarker = L.marker(location, {
+          icon: L.divIcon({
+            className: "",
+            html: '<div class="current-location-dot"></div>',
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+          }),
+          zIndexOffset: 1000
+        }).addTo(map);
+
+        currentLocationMarker.bindPopup("📍 現在地");
+      } else {
+        currentLocationMarker.setLatLng(location);
+      }
+
+      if (!currentLocationCircle) {
+        currentLocationCircle = L.circle(location, {
+          radius: accuracy,
+          color: "#1683f8",
+          weight: 1,
+          fillColor: "#1683f8",
+          fillOpacity: 0.12,
+          interactive: false
+        }).addTo(map);
+      } else {
+        currentLocationCircle.setLatLng(location);
+        currentLocationCircle.setRadius(accuracy);
+      }
+
+      console.log("現在地を更新しました:", lat, lng);
+
+      if (!hasLocated) {
+        map.setView(location, 15);
+        hasLocated = true;
+        showMap();
+      }
+    }
+
+    // 現在地の取得を開始
+    function startLocationTracking() {
+      if (!navigator.geolocation) {
+        console.log("位置情報に対応していません。東京駅を表示します。");
+        map.setView(TOKYO_STATION, 13);
+        showMap();
+        return;
+      }
+
+      navigator.geolocation.watchPosition(
+        updateCurrentLocation,
+        error => {
+          console.log("位置情報を取得できませんでした:", error.message);
+
+          if (!hasLocated) {
+            map.setView(TOKYO_STATION, 13);
+            showMap();
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 5000
+        }
+      );
+    }
+
+    startLocationTracking();
+
+    // 現在地へ戻るボタン
+    const LocationControl = L.Control.extend({
+      options: {
+        position: "bottomright"
+      },
+
+      onAdd: function() {
+        const button = L.DomUtil.create(
+          "button",
+          "location-button"
+        );
+
+        button.type = "button";
+        button.innerHTML = "📍";
+        button.title = "現在地へ戻る";
+        button.setAttribute("aria-label", "現在地へ戻る");
+
+        L.DomEvent.disableClickPropagation(button);
+
+        L.DomEvent.on(button, "click", function() {
+          if (latestLocation) {
+            map.flyTo(latestLocation, 16);
+            currentLocationMarker.openPopup();
+          } else {
+            alert("まだ現在地を取得できていません。位置情報を確認してください。");
+          }
+        });
+
+        return button;
+      }
+    });
+
+    map.addControl(new LocationControl());
+
+    let stations = [];
+    let taggedStationNames = [];
+    let lineData = [];
+
+    const cluster = L.markerClusterGroup({
+      chunkedLoading: true,
+      removeOutsideVisibleBounds: true,
+      maxClusterRadius: 10,
+      disableClusteringAtZoom: 17
+    });
+
+    const statusElement = document.getElementById("status");
+
+    // エキタグ登録情報を確認
+    function getTagInfo(stationName) {
+      const registered = taggedStationNames.some(tag => {
+        const name = typeof tag === "string" ? tag : tag.name;
+        return name === stationName;
+      });
+
+      if (registered) {
+        return { name: stationName };
+      }
+
+      for (const line of lineData) {
+        if (!Array.isArray(line.stations)) continue;
+
+        const found = line.stations.some(item => {
+          const name = typeof item === "string" ? item : item.name;
+          const status = typeof item === "object" ? item.ekitag : "";
+
+          return name === stationName &&
+            status !== "常設要確認" &&
+            status !== "未確認";
+        });
+
+        if (found) {
+          return { name: stationName };
+        }
+      }
+
+      return null;
+    }
+
+    // 路線別の設置状況を確認
+    function getLineTagStatus(stationName) {
+      for (const line of lineData) {
+        if (!Array.isArray(line.stations)) continue;
+
+        const entry = line.stations.find(item => {
+          const name = typeof item === "string" ? item : item.name;
+          return name === stationName;
+        });
+
+        if (entry) {
+          return typeof entry === "object"
+            ? (entry.ekitag || "未確認")
+            : "登録あり・詳細未確認";
+        }
+      }
+
+      return null;
+    }
+
+    // 現在の地図範囲の駅を表示
+    function updateStations() {
+      if (!mapShown || stations.length === 0) return;
+
+      const bounds = map.getBounds();
+
+      cluster.clearLayers();
+
+      stations.forEach(station => {
+        if (
+          station.marker &&
+          bounds.contains([station.lat, station.lng])
+        ) {
+          cluster.addLayer(station.marker);
+        }
+      });
+
+      if (!map.hasLayer(cluster)) {
+        map.addLayer(cluster);
+      }
+    }
+
+    map.on("moveend", updateStations);
+    map.on("zoomend", updateStations);
+
+    // stations.jsonから駅データを読み込む
+    async function loadStationData() {
+      try {
+        statusElement.textContent = "駅データを読み込んでいます...";
+
+        const [stationResponse, tagResponse, lineResponse] =
+          await Promise.all([
+            fetch("stations.json"),
+            fetch("data/ekitag_stations.json"),
+            fetch("data/ekitag_lines.json")
+          ]);
+
+        if (!stationResponse.ok) {
+          throw new Error("stations.json を読み込めません");
+        }
+
+        if (!tagResponse.ok) {
+          throw new Error("data/ekitag_stations.json を読み込めません");
+        }
+
+        if (!lineResponse.ok) {
+          throw new Error("data/ekitag_lines.json を読み込めません");
+        }
+
+        const [stationFile, tagData, lineFile] = await Promise.all([
+          stationResponse.json(),
+          tagResponse.json(),
+          lineResponse.json()
+        ]);
+
+        if (!Array.isArray(stationFile.stations)) {
+          throw new Error("stations.json のデータ形式が正しくありません");
+        }
+
+        taggedStationNames = Array.isArray(tagData.stations)
+          ? tagData.stations
+          : [];
+
+        lineData = Array.isArray(lineFile.lines)
+          ? lineFile.lines
+          : [];
+
+        stations = stationFile.stations.map(s => ({
+          name: s.name,
+          lat: Number(s.lat),
+          lng: Number(s.lng),
+          lines: Array.isArray(s.lines) ? s.lines : [],
+          companies: Array.isArray(s.companies) ? s.companies : [],
+          marker: null
+        })).filter(s =>
+          s.name &&
+          Number.isFinite(s.lat) &&
+          Number.isFinite(s.lng) &&
+          s.lat >= -90 &&
+          s.lat <= 90 &&
+          s.lng >= -180 &&
+          s.lng <= 180
+        );
+
+        // 駅マーカーを作成
+        stations.forEach(station => {
+          const registered = Boolean(getTagInfo(station.name));
+          const lineStatus = getLineTagStatus(station.name);
+
+          const marker = L.marker(
+            [station.lat, station.lng],
+            {
+              icon: L.divIcon({
+                className: "",
+                html: `
+                  <div style="
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 50%;
+                    background: ${registered ? "#DDF4E4" : "#E8EDF5"};
+                    border: 2px solid ${registered ? "#18733B" : "#42618B"};
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 16px;
+                  ">${registered ? "🏷️" : "🚉"}</div>
+                `,
+                iconSize: [28, 28],
+                iconAnchor: [14, 14]
+              })
+            }
+          );
+
+          station.marker = marker;
+
+          const tagText = registered
+            ? "登録あり 🏷️（登録データに基づく）"
+            : "登録データなし 🚉（未設置とは限りません）";
+
+          const lineStatusText = lineStatus
+            ? lineStatus
+            : "路線別の設置状況は未登録";
+
+          marker.bindPopup(
+            "<strong>" + station.name + "駅</strong><br>" +
+            "エキタグ：" + tagText + "<br>" +
+            "路線別の状況：" + lineStatusText + "<br>" +
+            "路線：" + station.lines.join("、") + "<br>" +
+            "鉄道会社：" + station.companies.join("、")
+          );
+        });
+
+        updateStations();
+
+        statusElement.textContent =
+          "駅 " + stations.length + " 件 / 路線データ " +
+          lineData.length + " 路線";
+
+        console.log("駅データ読み込み成功:", stations.length);
+        console.log("エキタグ登録データ:", taggedStationNames);
+        console.log("路線別データ:", lineData);
+
+      } catch (error) {
+        console.error("読み込みエラー:", error);
+
+        statusElement.textContent =
+          "駅データの読み込みに失敗しました";
+
+        alert(
+          "駅データを読み込めませんでした。\n" +
+          error.message +
+          "\nファイル名と保存場所を確認してください。"
+        );
+      }
+    }
+
+    // 駅名検索
+    const search = document.getElementById("search");
+
+    search.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+
+      const query = search.value.trim();
+      if (!query) return;
+
+      const station =
+        stations.find(s => s.name === query) ||
+        stations.find(s => s.name.includes(query));
+
+      if (!station) {
+        alert(
+          "「" + query + "」という駅は見つかりませんでした。"
+        );
+        return;
+      }
+
+      map.flyTo([station.lat, station.lng], 17);
+
+      map.once("moveend", () => {
+        if (station.marker) {
+          if (!cluster.hasLayer(station.marker)) {
+            cluster.addLayer(station.marker);
+          }
+
+          if (!map.hasLayer(cluster)) {
+            map.addLayer(cluster);
+          }
+
+          station.marker.openPopup();
+        }
+      });
+    });
+
+    loadStationData();
+  </script>
+
+</body>
+</html>
